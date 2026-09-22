@@ -1,12 +1,22 @@
 import { useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { Loader2, AlertCircle, CircleGauge } from 'lucide-react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+const navigate = useNavigate();
+  const { session } = useAuth();
+
+  // Bouncer: If they are already logged in, push them straight to the dashboard
+  if (session) {
+    return ;
+  }
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -27,8 +37,8 @@ export default function Login() {
       setLoading(false);
       return;
     }
-    // AuthProvider's onAuthStateChange listener picks up the new session
-    // and ProtectedRoute redirects automatically -- no manual nav here.
+    // Success! Navigate immediately to the dashboard.
+    navigate('/dashboard', { replace: true });
   };
 
   return (

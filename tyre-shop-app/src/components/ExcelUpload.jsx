@@ -1,174 +1,274 @@
-import React, { useState } from 'react';
+import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../supabaseClient';
-import { UploadCloud, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload, X, Check, Loader2, AlertTriangle } from 'lucide-react';
 
-export default function ExcelUpload({ onUploadSuccess }) {
-  const [previewData, setPreviewData] = useState([]);
+const REQUIRED_HEADERS = ['Code', 'Category', 'Description', 'Price'];
+
+function cleanPrice(raw) {
+  if (typeof raw === 'number') return raw;
+  if (!raw) return 0;
+  const cleaned = String(raw).replace(/[^\d.]/g, '');
+  const value = parseFloat(cleaned);
+  return Number.isNaN(value) ? 0 : value;
+}
+
+export default function ExcelUpload({ onUploaded }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [rows, setRows] = useState([]);
   const [fileName, setFileName] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState(null);
+  const [status, setStatus] = useState('idle'); // idle | parsing | previewing | uploading | done | error
+  const [error, setError] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const inputRef = useRef(null);
 
-  // Clean and parse numeric currency/price strings
-  const cleanPrice = (val) => {
-    if (typeof val === 'number') return val;
-    if (!val) return 0;
-    const sanitized = String(val).replace(/[^0-9.-]+/g, '');
-    return parseFloat(sanitized) || 0;
+  const resetState = () => {
+    setRows([]);
+    setFileName('');
+    setStatus('idle');
+    setError('');
   };
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
+  const parseFile = (file) => {
+    setStatus('parsing');
+    setError('');
     setFileName(file.name);
-    setStatusMessage(null);
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = (e) => {
       try {
-        const bstr = evt.target.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsName = wb.SheetNames[0];
-        const ws = wb.Sheets[wsName];
+        const workbook = XLSX.read(e.target.result, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-        // Convert sheet to raw array of JSON objects
-        const rawJson = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
-        // Normalize matching column names flexibly
-        const parsedRows = rawJson.map((row) => {
-          const code = row['Code'] || row['code'] || row['Item Code'] || '';
-          const description = row['Description'] || row['description'] || '';
-          const serialNumber = row['Serial Number'] || row['serial_number'] || row['Serial'] || '';
-          const rawPrice = row['Selling Price'] || row['selling_price'] || row['Price'] || 0;
-
-          return {
-            item_code: String(code).trim(),
-            description: String(description).trim(),
-            serial_number: String(serialNumber).trim(),
-            selling_price: cleanPrice(rawPrice)
-          };
-        }).filter(item => item.item_code && item.description);
-
-        if (parsedRows.length === 0) {
-          setStatusMessage({ type: 'error', text: 'No valid rows found. Ensure headers are Code, Description, Serial Number, Selling Price.' });
+        if (raw.length === 0) {
+          setError('That sheet has no rows.');
+          setStatus('error');
           return;
         }
 
-        setPreviewData(parsedRows);
+        const missingHeaders = REQUIRED_HEADERS.filter((h) => !(h in raw[0]));
+        if (missingHeaders.length > 0) {
+          setError(`Missing expected column(s): ${missingHeaders.join(', ')}`);
+          setStatus('error');
+          return;
+        }
+
+        const cleaned = raw
+          .map((row) => ({
+            code: String(row.Code ?? '').trim(),
+            category: String(row.Category ?? '').trim() || 'Uncategorized',
+            description: String(row.Description ?? '').trim(),
+            price: cleanPrice(row.Price),
+          }))
+          .filter((row) => row.code);
+
+        setRows(cleaned);
+        setStatus('previewing');
       } catch (err) {
-        setStatusMessage({ type: 'error', text: 'Failed to read Excel file: ' + err.message });
+        console.error(err);
+        setError('Could not read that file. Is it a valid .xlsx or .csv?');
+        setStatus('error');
       }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
-  const handleSyncToSupabase = async () => {
-    if (previewData.length === 0) return;
-    setLoading(true);
-    setStatusMessage(null);
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) parseFile(file);
+  };
 
-    try {
-      // Upsert: Updates price/description if item_code exists, inserts if new.
-      const { error } = await supabase
-        .from('inventory')
-        .upsert(previewData, { 
-          onConflict: 'item_code',
-          ignoreDuplicates: false 
-        });
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) parseFile(file);
+  };
 
-      if (error) throw error;
+  const handleUpload = async () => {
+    setStatus('uploading');
+    setError('');
 
-      setStatusMessage({ 
-        type: 'success', 
-        text: `Successfully synced ${previewData.length} items to database!` 
-      });
-      setPreviewData([]);
-      setFileName('');
-      if (onUploadSuccess) onUploadSuccess();
-    } catch (err) {
-      setStatusMessage({ type: 'error', text: 'Supabase sync failed: ' + err.message });
-    } finally {
-      setLoading(false);
+    // Upsert by `code`: updates category/description/price for existing
+    // codes without touching stock_quantity (that column isn't in the
+    // payload), and inserts new codes with the table's default stock (0).
+    const { error: upsertError } = await supabase
+      .from('inventory')
+      .upsert(rows, { onConflict: 'code', ignoreDuplicates: false });
+
+    if (upsertError) {
+      console.error(upsertError);
+      setError(upsertError.message);
+      setStatus('error');
+      return;
     }
+
+    setStatus('done');
+    onUploaded?.();
+    setTimeout(() => {
+      setIsOpen(false);
+      resetState();
+    }, 1200);
   };
+
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg px-3.5 py-2 transition-all active:scale-[0.98]"
+      >
+        <Upload className="w-4 h-4" />
+        Upload stock sheet
+      </button>
+    );
+  }
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6 mb-6">
-      <h3 className="text-lg font-bold text-slate-800 mb-2">Bulk Stock / Price Update</h3>
-      <p className="text-sm text-slate-500 mb-4">
-        Upload distributor Excel files containing columns: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Code</code>, <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Description</code>, <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Serial Number</code>, <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Selling Price</code>.
-      </p>
-
-      {/* Upload Box */}
-      <div className="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-lg p-6 text-center transition-colors cursor-pointer bg-slate-50 relative">
-        <input
-          type="file"
-          accept=".xlsx, .xls"
-          onChange={handleFileUpload}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-        />
-        <UploadCloud className="mx-auto h-10 w-10 text-slate-400 mb-2" />
-        <p className="text-sm font-medium text-slate-700">
-          {fileName ? fileName : 'Click or drag Excel sheet here'}
-        </p>
-        <p className="text-xs text-slate-400 mt-1">Supports .xlsx and .xls</p>
-      </div>
-
-      {/* Status Notice */}
-      {statusMessage && (
-        <div className={`mt-4 p-3 rounded-lg flex items-center gap-2 text-sm ${statusMessage.type === 'success' ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>
-          {statusMessage.type === 'success' ? <CheckCircle2 className="h-5 w-5" /> : <AlertCircle className="h-5 w-5" />}
-          {statusMessage.text}
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div className="bg-[#15171C] border border-[#272A32] rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col card-enter">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#272A32]">
+          <h3 className="text-sm font-semibold text-white">Upload stock sheet</h3>
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              resetState();
+            }}
+            className="text-neutral-500 hover:text-white transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-      )}
 
-      {/* Preview Table */}
-      {previewData.length > 0 && (
-        <div className="mt-6">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-semibold text-slate-700">
-              Previewing {previewData.length} items to update
-            </span>
-            <button
-              onClick={handleSyncToSupabase}
-              disabled={loading}
-              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-all disabled:opacity-50"
+        <div className="p-5 overflow-y-auto">
+          {status === 'idle' && (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => inputRef.current?.click()}
+              className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-12 cursor-pointer transition-colors ${
+                isDragging
+                  ? 'border-orange-600 bg-orange-600/5'
+                  : 'border-[#2E3138] hover:border-neutral-600'
+              }`}
             >
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              Confirm & Sync to Database
+              <Upload className="w-6 h-6 text-neutral-500" />
+              <p className="text-sm text-neutral-400">
+                Drag a .xlsx or .csv file here, or click to browse
+              </p>
+              <p className="text-xs text-neutral-600">
+                Expects columns: Code, Category, Description, Price
+              </p>
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+            </div>
+          )}
+
+          {status === 'parsing' && (
+            <div className="flex items-center justify-center gap-2 py-12 text-neutral-400 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Reading {fileName}
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="space-y-3">
+              <div className="flex items-start gap-2 bg-red-950/40 border border-red-900/60 text-red-300 text-sm rounded-lg px-3 py-2">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={resetState}
+                className="text-sm text-orange-400 hover:text-orange-300"
+              >
+                Try a different file
+              </button>
+            </div>
+          )}
+
+          {status === 'previewing' && (
+            <div className="space-y-3">
+              <p className="text-xs text-neutral-500">
+                {rows.length} row{rows.length !== 1 ? 's' : ''} parsed from {fileName}.
+                Existing stock quantities won't be touched.
+              </p>
+              <div className="border border-[#272A32] rounded-lg overflow-hidden">
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-[#1B1E24] text-neutral-400 sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2">Code</th>
+                        <th className="text-left px-3 py-2">Category</th>
+                        <th className="text-left px-3 py-2">Description</th>
+                        <th className="text-right px-3 py-2">Price</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.slice(0, 50).map((row, i) => (
+                        <tr key={i} className="border-t border-[#272A32]">
+                          <td className="px-3 py-1.5 text-neutral-300">{row.code}</td>
+                          <td className="px-3 py-1.5 text-neutral-400">{row.category}</td>
+                          <td className="px-3 py-1.5 text-neutral-300 truncate max-w-[160px]">
+                            {row.description}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-orange-400">
+                            ₹{row.price}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {rows.length > 50 && (
+                <p className="text-xs text-neutral-600">
+                  Showing first 50 of {rows.length} rows.
+                </p>
+              )}
+            </div>
+          )}
+
+          {status === 'uploading' && (
+            <div className="flex items-center justify-center gap-2 py-12 text-neutral-400 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Syncing {rows.length} rows to Supabase
+            </div>
+          )}
+
+          {status === 'done' && (
+            <div className="flex items-center justify-center gap-2 py-12 text-green-400 text-sm">
+              <Check className="w-4 h-4" />
+              Inventory updated
+            </div>
+          )}
+        </div>
+
+        {status === 'previewing' && (
+          <div className="flex justify-end gap-2 px-5 py-4 border-t border-[#272A32]">
+            <button
+              onClick={resetState}
+              className="text-sm text-neutral-400 hover:text-white px-3 py-2 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleUpload}
+              className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-all active:scale-[0.98]"
+            >
+              Confirm upload
             </button>
           </div>
-
-          <div className="overflow-x-auto max-h-64 border border-slate-200 rounded-lg">
-            <table className="w-full text-left text-xs text-slate-600">
-              <thead className="bg-slate-100 text-slate-700 uppercase sticky top-0">
-                <tr>
-                  <th className="p-2.5">Code</th>
-                  <th className="p-2.5">Description</th>
-                  <th className="p-2.5">Serial</th>
-                  <th className="p-2.5 text-right">Selling Price</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {previewData.slice(0, 15).map((row, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50">
-                    <td className="p-2.5 font-mono font-medium text-slate-800">{row.item_code}</td>
-                    <td className="p-2.5 font-medium">{row.description}</td>
-                    <td className="p-2.5 text-slate-500">{row.serial_number || '—'}</td>
-                    <td className="p-2.5 text-right font-semibold text-emerald-600">₹{row.selling_price.toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {previewData.length > 15 && (
-              <div className="text-center py-2 text-xs text-slate-400 bg-slate-50">
-                Showing first 15 of {previewData.length} items
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

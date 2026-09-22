@@ -1,0 +1,17 @@
+{
+  "name": "RR Wheels Truing",
+  "short_name": "RR Wheels",
+  "description": "Stock and financial dashboard for RR Wheels Truing",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0b0c0f",
+  "theme_color": "#f97316",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

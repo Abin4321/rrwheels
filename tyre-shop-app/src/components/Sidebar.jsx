@@ -27,9 +27,9 @@ export default function Sidebar() {
           </div>
           <div>
             <p className="text-sm font-semibold font-display leading-tight text-white">
-              RR Wheels
+              RR Wheels Truing
             </p>
-            <p className="text-xs text-neutral-500 leading-tight">Truing</p>
+            
           </div>
         </div>
 
@@ -61,7 +61,7 @@ export default function Sidebar() {
                 : 'bg-neutral-700/40 text-neutral-400'
             }`}
           >
-            {isOwner ? 'Owner' : 'Admin (read only)'}
+            {isOwner ? 'Owner' : 'Admin'}
           </span>
           <button
             onClick={signOut}

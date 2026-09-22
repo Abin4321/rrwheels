@@ -58,7 +58,7 @@ export default function InventoryEditModal({ item, onClose, onSaved }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-70 z-50">
       <form
         onSubmit={handleSave}
         className="bg-[#15171C] border border-[#272A32] rounded-2xl w-full max-w-md card-enter"

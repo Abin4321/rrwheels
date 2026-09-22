@@ -53,7 +53,7 @@ const navigate = useNavigate();
             <CircleGauge className="w-7 h-7 text-white" strokeWidth={2.25} />
           </div>
           <h1 className="text-2xl font-semibold font-display text-white">RR Wheels Truing</h1>
-          <p className="text-neutral-500 text-sm mt-1">Shop dashboard sign in</p>
+          <p className="text-neutral-500 mt-2">Sign In</p>
         </div>
 
         <form
@@ -79,7 +79,7 @@ const navigate = useNavigate();
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-lg bg-[#1B1E24] border border-[#272A32] text-white px-3 py-2.5 text-sm outline-none transition-colors focus:border-orange-600 focus:ring-1 focus:ring-orange-600"
-              placeholder="owner@rrwheels.com"
+              placeholder="@rrwheels.com"
             />
           </div>
 
@@ -110,13 +110,13 @@ const navigate = useNavigate();
                 Signing in
               </>
             ) : (
-              'Sign in'
+              'Login'
             )}
           </button>
         </form>
 
         <p className="text-center text-xs text-neutral-600 mt-6">
-          Owner and admin accounts are provisioned by the shop owner.
+          Contact owner for queries
         </p>
       </div>
     </div>
